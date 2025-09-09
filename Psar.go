@@ -20,6 +20,13 @@ func before(a, b time.Time) bool {
 	return a.Before(b)
 }
 
+type Direction int
+
+const (
+	IsLong Direction = iota
+	IsShort
+)
+
 // Psar is an iterative style structure that calculates Psar values for a given
 // set of chart data
 type Psar struct {
@@ -36,6 +43,9 @@ type Psar struct {
 	// Start date is used to as the trigger. This is also the bar it derives the
 	// initial Extreme Price from.
 	StartDate *time.Time
+
+	// Direction determines if Psar is calculated for the "long" or "short" side.
+	Direction Direction
 
 	// psarSeries holds the calculated Psar values for each bar in the series.
 	psarSeries []*PsarPeriod
