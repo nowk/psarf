@@ -284,6 +284,70 @@ func TestPsar_Sar(t *testing.T) {
 	}
 }
 
+func TestPsar_Sar_Short(t *testing.T) {
+	entryBar, _ := time.Parse("2006-01-02", "2025-08-26")
+
+	// based off of data from TAP from Aug 22, 2025
+	// NOTE TV data vs GPT is different, below is TV data
+	barSeries := []ChartBar{
+		&myChartBar{high: 52.94, low: 51.81},
+		&myChartBar{high: 52.81, low: 51.44},
+		&myChartBar{date: entryBar, high: 51.43, low: 50.25},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 51.29, low: 50.27},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 51.39, low: 49.79},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.94, low: 50.14},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.40, low: 49.42},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.22, low: 49.63},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.06, low: 49.50},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.66, low: 49.42},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.19, low: 49.46},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 50.31, low: 49.30},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 49.25, low: 48.53},
+		&myChartBar{date: entryBar.Add(24 * time.Hour), high: 49.42, low: 48.85},
+	}
+
+	expectedPsar := []float64{
+		52.94,
+		52.94,
+		52.94, // starting for the entry bar
+		52.89,
+		52.83,
+		52.71,
+		52.59,
+		52.40,
+		52.23,
+		52.06,
+		// 51.85, // TV's psar has a reset on the AF which slows the descent
+		// 51.65, // question is, do I want that to slow down the acceleration?
+		// 51.42,
+		// 51.07,
+		51.90, // Calculations for the original formula, also confimed on TradeStation
+		51.75,
+		51.55,
+		51.25,
+	}
+
+	p := &Psar{
+		Series:    barSeries,
+		StartDate: &entryBar,
+		Direction: IsShort,
+	}
+
+	// TODO when normal iteratation is called on Psar, ie p.Next(), the Psar
+	// should start athe "StartDate" bar, not the first bar in the series.
+
+	// p.Step(2) // move to the entry bar - 1, we are calling Next
+	for i, want := range expectedPsar {
+		if !p.Next() {
+			t.Fatalf("Next() failed at index %d", i)
+		}
+		got := rn2(p.Bar().Sar)
+		if got != want {
+			t.Errorf("bar %d: expected SAR %v, got %v", i, want, got)
+		}
+	}
+}
+
 func TestPsar_Sar_CannotExceedLowOfLast2Bars(t *testing.T) {
 	// Based on data from BIG Jan 04, 2021
 	enDate := time.Date(2021, 0, 5, 0, 0, 0, 0, time.UTC)
@@ -345,6 +409,7 @@ func TestPsar_Sar_CannotExceedLowOfLast2Bars(t *testing.T) {
 		t.Fatalf("expected 42.08, got %v", got)
 	}
 }
+
 
 func rn(f float64, p float64) float64 {
 	return math.Round(f*p) / p
