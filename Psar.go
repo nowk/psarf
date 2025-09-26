@@ -45,6 +45,7 @@ type Psar struct {
 	StartDate *time.Time
 
 	// Direction determines if Psar is calculated for the "long" or "short" side.
+	// NOTE if no Direction is set, it defaults to IsLong
 	Direction Direction
 
 	// psarSeries holds the calculated Psar values for each bar in the series.
@@ -54,6 +55,16 @@ type Psar struct {
 	// that is truncated by the lowest last 2 bars rule
 	// NOTE this is not part of the psar formula, but is for my own personal use
 	pipOffset float64
+
+	// StopPrice is an optional user defined stop price. This has two use cases:
+	// 1) it serves as the "last "pivot" prior to the reversal" that The
+	//    Parabolic Sar uses to calculate the initial Sar value. In a normal use
+	//    case the Series will start at this pivot point.
+	// 2) it serves as a custom stop price, that can be used to "anchor" the
+	//    formula to use that value as the initial Sar value. This is the main
+	//		use case for the Psar library.
+	// NOTE this value will only be used within the isEntryBar call
+	StopPrice float64
 
 	// i is an internal iteration counter (no slicing here, we need to be able
 	// to go back in history)
@@ -87,75 +98,110 @@ func (p *Psar) calculatePsar() {
 	var (
 		i        = p.i
 		chartBar = p.Series[i]
-		extLow   = chartBar.Low()
-		ep       = chartBar.High()
 		af       = AFIncrement
+		sar      float64
+		ep       float64
+		extVal   float64
 
-		sar float64
+		dir     = p.Direction
+		isShort = dir == IsShort
+		isLong  = dir == IsLong || !isShort // default to long if not set
 	)
 
-	if i > 0 {
-		var prevbp = p.psarSeries[i-1]
-		af = prevbp.AF // FIXME write unit test for this
+	// skip any calculations until we reach the start date
+	if before(*chartBar.Date(), *p.StartDate) {
+		// FIXME calculations should start at the start date, so this would be
+		// technically unnecessary
+		p.psarSeries = append(p.psarSeries, &PsarPeriod{ChartBar: chartBar})
 
-		if ep > prevbp.EP {
-			af += AFIncrement
+		return
+	}
+
+	// always default to the current bar's high/low for the ep/extVal
+	if isShort {
+		ep, extVal = chartBar.Low(), chartBar.High()
+	} else {
+		ep, extVal = chartBar.High(), chartBar.Low()
+	}
+
+	// FIXME checks for start date, etc...
+
+	if p.isEntryBar(i) {
+		af = AFIncrement
+
+		if p.StopPrice != 0 {
+			// because StopPrice is user defined, there is no pipOffset applied at
+			// the entry bar point
+			sar = p.StopPrice
+		} else if isShort {
+			sar = p.Series[0].High() + p.pipOffset
 		} else {
-			ep = prevbp.EP
+			sar = p.Series[0].Low() - p.pipOffset
 		}
+	} else {
+		// technically, at this point, you should always have a previous bar
+		var prevbp = p.psarSeries[i-1]
+		af = prevbp.AF
 
-		// the sar
-		sar = prevbp.Sar + prevbp.AFSarEP
+		if isShort {
+			if ep < prevbp.EP {
+				af += AFIncrement
+			} else {
+				ep = prevbp.EP
+			}
+			sar = prevbp.Sar - prevbp.AFSarEP
 
-		// get the lowest low (long) of the last 2 bars. This is a cache for
-		// performance purposes.
-		// FIXME pretty sure this can be reduced to not have to go back 2 bars
-		var l1 = prevbp.Low()
-		extLow = l1
-		if i-2 >= 0 {
-			if l2 := p.psarSeries[i-2].Low(); l2 < l1 {
-				extLow = l2
+			var h1 = prevbp.High()
+			extVal = h1
+			if i-2 >= 0 {
+				if h2 := p.psarSeries[i-2].High(); h2 > h1 {
+					extVal = h2
+				}
+			}
+		} else {
+			if ep > prevbp.EP {
+				af += AFIncrement
+			} else {
+				ep = prevbp.EP
+			}
+			sar = prevbp.Sar + prevbp.AFSarEP
+
+			var l1 = prevbp.Low()
+			extVal = l1
+			if i-2 >= 0 {
+				if l2 := p.psarSeries[i-2].Low(); l2 < l1 {
+					extVal = l2
+				}
 			}
 		}
 	}
-	// set the initial sar and af only on the entry bar. Calculate in any
-	// additional pipOffset if applicable
-	if p.isEntryBar(i) {
-		af, sar = AFIncrement, p.Series[0].Low()-p.pipOffset
+
+	if isLong && sar > extVal {
+		sar = extVal - p.pipOffset
+	} else if isShort && sar < extVal {
+		sar = extVal + p.pipOffset
 	}
-	// "reset" af and sar values for bars before the start date. Any bar between
-	// the first bar in the series and the start bar are defaulted to the first
-	// bar in the series. They are not used in the calculation other than using
-	// their lows as part of the low of the last 2 bars values.
-	if before(*chartBar.Date(), *p.StartDate) {
-		af, sar = 0.0, p.Series[0].Low()
-	}
-	// check to see if that the sar does not exceed (long) the lowest low of the
-	// last 2 bars. *Tricky one, not explained in many of the Psar
-	// explanations.*
-	if sar > extLow {
-		sar = extLow - p.pipOffset
-	}
-	// acceleration factor should not exceed the max af (0.20)
-	// TODO needs a unit test
+
 	if af > AFMax {
 		af = AFMax
 	}
 
-	var (
-		sarEp   = ep - sar
-		afSarEp = af * sarEp
-	)
+	var sarEp float64
+	if isShort {
+		sarEp = sar - ep
+	} else {
+		sarEp = ep - sar
+	}
+	var afSarEp = af * sarEp
+
 	p.psarSeries = append(p.psarSeries, &PsarPeriod{
 		ChartBar: chartBar,
-
-		EP:      ep,
-		AF:      af,
-		Sar:     sar,
-		SarEP:   sarEp,
-		AFSarEP: afSarEp,
-
-		extLow: extLow,
+		EP:       ep,
+		AF:       af,
+		Sar:      sar,
+		SarEP:    sarEp,
+		AFSarEP:  afSarEp,
+		extVal:   extVal, // aka extLow or extHigh
 	})
 }
 
@@ -177,8 +223,8 @@ func (p *Psar) Next() bool {
 	return true
 }
 
-// Step "next"s for the number of j from it's current index i. This is primarily
-// just for QOL and unit testing purposes
+// Step "next"s for the number of j from it's current index i. This is
+// primarily just for QOL and unit testing purposes
 func (p *Psar) Step(j int) {
 	j = p.i + j
 	// FIXME check if j exceeds the series count and truncate to the series
@@ -196,24 +242,28 @@ func (p *Psar) Step(j int) {
 // tomorrows Psar before the market opens.
 // NOTE this is the "next" bar not necessarily the "future" bar. It will be the
 // next session from the current iteration index.
+// FIXME why are we returning an error here?
 func (p *Psar) NextSession() (*PsarPeriod, error) {
 	var (
 		prevpb = p.psarSeries[p.i-1]
-		pb     *PsarPeriod
+		extVal = prevpb.extVal
+
+		sar float64
 	)
 
-	// calculate the sar only here (this is why we don't call calculate as we
-	// don't have any of the bar data for "tomorrow")
-	// TODO is there a way to integrate this into the calculation as a whole
-	// the extreme low of last 2 days was missed intially
-	var sar = prevpb.Sar + prevpb.AFSarEP
+	if p.Direction == IsShort {
+		sar = prevpb.Sar - prevpb.AFSarEP
 
-	// must always observer the lowest 2 lows rule
-	if sar > prevpb.extLow {
-		sar = prevpb.extLow - p.pipOffset
+		if sar < extVal {
+			sar = extVal + p.pipOffset
+		}
+	} else {
+		sar = prevpb.Sar + prevpb.AFSarEP
+
+		if sar > extVal {
+			sar = extVal - p.pipOffset
+		}
 	}
 
-	pb = &PsarPeriod{Sar: sar}
-
-	return pb, nil
+	return &PsarPeriod{Sar: sar}, nil
 }

@@ -17,11 +17,11 @@ type PsarPeriod struct {
 	// NOTE this is here for performance. This is a "cached" value. Lookups on
 	// any dataset of more than a few bars becomes noticeable, and over a few
 	// weeks it becomes nearly impossible
-	extLow float64
+	extVal float64
 }
 
-// ExtLow returns the extLow value (normally not a display value, but available
+// ExtVal returns the extVal value (normally not a display value, but available
 // this way just in case)
-func (p *PsarPeriod) ExtLow() float64 {
-	return p.extLow
+func (p *PsarPeriod) ExtVal() float64 {
+	return p.extVal
 }
